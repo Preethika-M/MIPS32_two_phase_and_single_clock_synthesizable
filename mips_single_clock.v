@@ -10,7 +10,7 @@ reg        EX_MEM_cond;
 reg [31:0] MEM_WB_IR, MEM_WB_ALUOUT, MEM_WB_LMD;
 
 reg halted, taken_branch;
-reg stall;  // Stall signal for load-use hazard
+reg stall;
 
 reg [31:0] regs[0:31];
 reg [31:0] Mem[0:1023];
@@ -39,43 +39,36 @@ function [4:0] dest_reg;
     end
 endfunction
 
-// --- IF Stage + PC logic ---
+// --- IF Stage ---
 always @(posedge clk) begin
-    if (halted == 0) begin
-        if(stall) begin
-            // Freeze PC and IF/ID registers during stall
+    if (!halted) begin
+        if (stall) begin
             PC <= PC;
             IF_ID_IR <= IF_ID_IR;
             IF_ID_NPC <= IF_ID_NPC;
-        end
-        else if((EX_MEM_cond == 1 && EX_MEM_IR[31:26] == BEQZ) ||
-                (EX_MEM_cond == 0 && EX_MEM_IR[31:26] == BNEQZ)) begin
-            // Branch taken
+        end else if ((EX_MEM_cond && EX_MEM_IR[31:26]==BEQZ) || (!EX_MEM_cond && EX_MEM_IR[31:26]==BNEQZ)) begin
             IF_ID_IR <= Mem[EX_MEM_ALUOUT];
             IF_ID_NPC <= EX_MEM_ALUOUT + 1;
             PC <= EX_MEM_ALUOUT + 1;
-            taken_branch <= 1'b1;
-        end
-        else begin
+            taken_branch <= 1;
+        end else begin
             IF_ID_IR <= Mem[PC];
             IF_ID_NPC <= PC + 1;
             PC <= PC + 1;
-            taken_branch <= 1'b0;
+            taken_branch <= 0;
         end
     end
 end
 
 // --- ID Stage + Hazard Detection ---
 always @(posedge clk) begin
-    if(halted==0) begin
-        // Default read registers
-        ID_EX_A <= (IF_ID_IR[25:21]==0)? 0 : regs[IF_ID_IR[25:21]];
-        ID_EX_B <= (IF_ID_IR[20:16]==0)? 0 : regs[IF_ID_IR[20:16]];
+    if (!halted) begin
+        ID_EX_A <= (IF_ID_IR[25:21]==0)?0:regs[IF_ID_IR[25:21]];
+        ID_EX_B <= (IF_ID_IR[20:16]==0)?0:regs[IF_ID_IR[20:16]];
         ID_EX_NPC <= IF_ID_NPC;
         ID_EX_IR <= IF_ID_IR;
         ID_EX_Imm <= {{16{IF_ID_IR[15]}},IF_ID_IR[15:0]};
 
-        // Decode instruction type
         case(IF_ID_IR[31:26])
             ADD,SUB,AND,OR,NOT,XOR,NEGU,MUL,DIV,MOVE,MOVN: ID_EX_type <= RR_ALU;
             ADDI,SUBI,ANDI,ORI,XORI: ID_EX_type <= RM_ALU;
@@ -86,13 +79,11 @@ always @(posedge clk) begin
             default: ID_EX_type <= HALT;
         endcase
 
-        // --- Load-use hazard detection ---
-        stall <= 0; // default
+        // load-use hazard
+        stall <= 0;
         if (ID_EX_type == LOAD) begin
-            if ((ID_EX_IR[20:16] != 0) && 
-                ((ID_EX_IR[20:16] == IF_ID_IR[25:21]) || (ID_EX_IR[20:16] == IF_ID_IR[20:16]))) begin
+            if ((ID_EX_IR[20:16]!=0) && ((ID_EX_IR[20:16]==IF_ID_IR[25:21])||(ID_EX_IR[20:16]==IF_ID_IR[20:16]))) begin
                 stall <= 1;
-                // Insert bubble in EX stage
                 ID_EX_type <= NOP;
                 ID_EX_IR <= 0;
                 ID_EX_A <= 0;
@@ -105,48 +96,43 @@ end
 
 // --- EX Stage + Forwarding ---
 always @(posedge clk) begin
-    if(halted==0) begin
+    if(!halted) begin
         EX_MEM_type <= ID_EX_type;
         EX_MEM_IR <= ID_EX_IR;
         taken_branch <= 0;
 
-        // --- Forwarding logic ---
         reg [31:0] opA, opB;
         reg [4:0] dest_exmem, dest_memwb;
         reg [31:0] val_exmem, val_memwb;
 
-        // Destinations
         dest_exmem = dest_reg(EX_MEM_type, EX_MEM_IR);
-        val_exmem = (EX_MEM_type==RR_ALU || EX_MEM_type==RM_ALU) ? EX_MEM_ALUOUT : 0;
+        val_exmem = (EX_MEM_type==RR_ALU || EX_MEM_type==RM_ALU)? EX_MEM_ALUOUT:0;
 
         dest_memwb = dest_reg(MEM_WB_type, MEM_WB_IR);
-        val_memwb = (MEM_WB_type==LOAD) ? MEM_WB_LMD : MEM_WB_ALUOUT;
+        val_memwb = (MEM_WB_type==LOAD)? MEM_WB_LMD:MEM_WB_ALUOUT;
 
         opA = ID_EX_A;
         opB = ID_EX_B;
 
-        // Forward to opA
-        if ((dest_exmem!=0) && (dest_exmem==ID_EX_IR[25:21]) && (EX_MEM_type==RR_ALU || EX_MEM_type==RM_ALU))
+        if ((dest_exmem!=0)&&(dest_exmem==ID_EX_IR[25:21])&&(EX_MEM_type==RR_ALU||EX_MEM_type==RM_ALU))
             opA = val_exmem;
-        else if ((dest_memwb!=0) && (dest_memwb==ID_EX_IR[25:21]) && (MEM_WB_type==RR_ALU || MEM_WB_type==RM_ALU || MEM_WB_type==LOAD))
+        else if ((dest_memwb!=0)&&(dest_memwb==ID_EX_IR[25:21])&&(MEM_WB_type==RR_ALU||MEM_WB_type==RM_ALU||MEM_WB_type==LOAD))
             opA = val_memwb;
 
-        // Forward to opB
-        if (ID_EX_type == RR_ALU) begin
-            if ((dest_exmem!=0) && (dest_exmem==ID_EX_IR[20:16]) && (EX_MEM_type==RR_ALU || EX_MEM_type==RM_ALU))
+        if(ID_EX_type==RR_ALU) begin
+            if ((dest_exmem!=0)&&(dest_exmem==ID_EX_IR[20:16])&&(EX_MEM_type==RR_ALU||EX_MEM_type==RM_ALU))
                 opB = val_exmem;
-            else if ((dest_memwb!=0) && (dest_memwb==ID_EX_IR[20:16]) && (MEM_WB_type==RR_ALU || MEM_WB_type==RM_ALU || MEM_WB_type==LOAD))
+            else if ((dest_memwb!=0)&&(dest_memwb==ID_EX_IR[20:16])&&(MEM_WB_type==RR_ALU||MEM_WB_type==RM_ALU||MEM_WB_type==LOAD))
                 opB = val_memwb;
         end
 
-        // ALU execution
         case(ID_EX_type)
             RR_ALU: begin
                 case(ID_EX_IR[31:26])
                     ADD: EX_MEM_ALUOUT <= opA + opB;
                     SUB: EX_MEM_ALUOUT <= opA - opB;
                     AND: EX_MEM_ALUOUT <= opA & opB;
-                    OR : EX_MEM_ALUOUT <= opA | opB;
+                    OR:  EX_MEM_ALUOUT <= opA | opB;
                     NOT: EX_MEM_ALUOUT <= ~opA;
                     XOR: EX_MEM_ALUOUT <= opA ^ opB;
                     NEGU: EX_MEM_ALUOUT <= -opA;
@@ -161,7 +147,7 @@ always @(posedge clk) begin
                     ADDI: EX_MEM_ALUOUT <= opA + ID_EX_Imm;
                     SUBI: EX_MEM_ALUOUT <= opA - ID_EX_Imm;
                     ANDI: EX_MEM_ALUOUT <= opA & ID_EX_Imm;
-                    ORI : EX_MEM_ALUOUT <= opA | ID_EX_Imm;
+                    ORI:  EX_MEM_ALUOUT <= opA | ID_EX_Imm;
                     XORI: EX_MEM_ALUOUT <= opA ^ ID_EX_Imm;
                 endcase
             end
@@ -171,7 +157,7 @@ always @(posedge clk) begin
             end
             BRANCH: begin
                 EX_MEM_ALUOUT <= ID_EX_NPC & ID_EX_Imm;
-                EX_MEM_cond <= (opA == 0);
+                EX_MEM_cond <= (opA==0);
             end
         endcase
     end
@@ -179,26 +165,25 @@ end
 
 // --- MEM Stage ---
 always @(posedge clk) begin
-    if(halted==0) begin
+    if(!halted) begin
         MEM_WB_type <= EX_MEM_type;
         MEM_WB_IR <= EX_MEM_IR;
-
         case(EX_MEM_type)
             RR_ALU, RM_ALU: MEM_WB_ALUOUT <= EX_MEM_ALUOUT;
             LOAD: MEM_WB_LMD <= Mem[EX_MEM_ALUOUT];
-            STORE: if(taken_branch==0) Mem[EX_MEM_ALUOUT] <= EX_MEM_B;
+            STORE: if(!taken_branch) Mem[EX_MEM_ALUOUT] <= EX_MEM_B;
         endcase
     end
 end
 
 // --- WB Stage ---
 always @(posedge clk) begin
-    if(taken_branch==0) begin
+    if(!taken_branch) begin
         case(MEM_WB_type)
             RR_ALU: regs[MEM_WB_IR[15:11]] <= MEM_WB_ALUOUT;
             RM_ALU: regs[MEM_WB_IR[20:16]] <= MEM_WB_ALUOUT;
-            LOAD:   regs[MEM_WB_IR[20:16]] <= MEM_WB_LMD;
-            HALT:   halted <= 1'b1;
+            LOAD: regs[MEM_WB_IR[20:16]] <= MEM_WB_LMD;
+            HALT: halted <= 1;
         endcase
     end
 end
