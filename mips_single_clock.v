@@ -2,7 +2,8 @@ module mips(clk);
 
 input clk;
 
-reg [31:0] PC, IF_ID_IR, IF_ID_NPC;
+reg [31:0] PC;
+reg [31:0] IF_ID_IR, IF_ID_NPC;
 reg [31:0] ID_EX_IR, ID_EX_NPC, ID_EX_A, ID_EX_B, ID_EX_Imm;
 reg [2:0]  ID_EX_type, EX_MEM_type, MEM_WB_type;
 reg [31:0] EX_MEM_A, EX_MEM_B, EX_MEM_ALUOUT, EX_MEM_IR;
@@ -22,10 +23,10 @@ parameter ADD = 6'b000000, SUB = 6'b000001, MUL = 6'b000010, DIV = 6'b000011,
           MOVN = 6'b010000, MOVE = 6'b010010, NEGU = 6'b010011,
           LW = 6'b010100, SW = 6'b010101, BNEQZ = 6'b010110;
 
-parameter RR_ALU=3'b000, RM_ALU = 3'b001, LOAD = 3'b010, STORE = 3'b011, 
-          BRANCH = 3'b100, HALT = 3'b101, NOP = 3'b110;
+parameter RR_ALU=3'b000, RM_ALU=3'b001, LOAD=3'b010, STORE=3'b011, 
+          BRANCH=3'b100, HALT=3'b101, NOP=3'b110;
 
-// --- helper function to get destination register ---
+// --- Helper function to get destination register ---
 function [4:0] dest_reg;
     input [2:0] typ;
     input [31:0] ir;
@@ -43,15 +44,18 @@ endfunction
 always @(posedge clk) begin
     if (!halted) begin
         if (stall) begin
+            // Hold PC and IF/ID pipeline
             PC <= PC;
             IF_ID_IR <= IF_ID_IR;
             IF_ID_NPC <= IF_ID_NPC;
         end else if ((EX_MEM_cond && EX_MEM_IR[31:26]==BEQZ) || (!EX_MEM_cond && EX_MEM_IR[31:26]==BNEQZ)) begin
+            // Branch taken
             IF_ID_IR <= Mem[EX_MEM_ALUOUT];
             IF_ID_NPC <= EX_MEM_ALUOUT + 1;
             PC <= EX_MEM_ALUOUT + 1;
             taken_branch <= 1;
         end else begin
+            // Normal fetch
             IF_ID_IR <= Mem[PC];
             IF_ID_NPC <= PC + 1;
             PC <= PC + 1;
@@ -79,7 +83,7 @@ always @(posedge clk) begin
             default: ID_EX_type <= HALT;
         endcase
 
-        // load-use hazard
+        // Load-use hazard detection
         stall <= 0;
         if (ID_EX_type == LOAD) begin
             if ((ID_EX_IR[20:16]!=0) && ((ID_EX_IR[20:16]==IF_ID_IR[25:21])||(ID_EX_IR[20:16]==IF_ID_IR[20:16]))) begin
@@ -114,6 +118,7 @@ always @(posedge clk) begin
         opA = ID_EX_A;
         opB = ID_EX_B;
 
+        // Forwarding
         if ((dest_exmem!=0)&&(dest_exmem==ID_EX_IR[25:21])&&(EX_MEM_type==RR_ALU||EX_MEM_type==RM_ALU))
             opA = val_exmem;
         else if ((dest_memwb!=0)&&(dest_memwb==ID_EX_IR[25:21])&&(MEM_WB_type==RR_ALU||MEM_WB_type==RM_ALU||MEM_WB_type==LOAD))
@@ -126,6 +131,7 @@ always @(posedge clk) begin
                 opB = val_memwb;
         end
 
+        // Execute
         case(ID_EX_type)
             RR_ALU: begin
                 case(ID_EX_IR[31:26])
@@ -152,11 +158,11 @@ always @(posedge clk) begin
                 endcase
             end
             LOAD, STORE: begin
-                EX_MEM_ALUOUT <= ID_EX_A & ID_EX_Imm;
+                EX_MEM_ALUOUT <= ID_EX_A + ID_EX_Imm;
                 EX_MEM_B <= ID_EX_B;
             end
             BRANCH: begin
-                EX_MEM_ALUOUT <= ID_EX_NPC & ID_EX_Imm;
+                EX_MEM_ALUOUT <= ID_EX_NPC + ID_EX_Imm;
                 EX_MEM_cond <= (opA==0);
             end
         endcase
@@ -168,6 +174,7 @@ always @(posedge clk) begin
     if(!halted) begin
         MEM_WB_type <= EX_MEM_type;
         MEM_WB_IR <= EX_MEM_IR;
+
         case(EX_MEM_type)
             RR_ALU, RM_ALU: MEM_WB_ALUOUT <= EX_MEM_ALUOUT;
             LOAD: MEM_WB_LMD <= Mem[EX_MEM_ALUOUT];
