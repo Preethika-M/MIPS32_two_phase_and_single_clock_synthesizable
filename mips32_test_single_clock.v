@@ -44,6 +44,8 @@ initial begin
     // Run simulation for enough time for instructions to execute
     #500;
 
+    // Wait until CPU halts
+    wait(DUT.halted_out);
     // Dump first 8 registers
     $display("----- Register Dump -----");
     for (k=0;k<8;k=k+1)
