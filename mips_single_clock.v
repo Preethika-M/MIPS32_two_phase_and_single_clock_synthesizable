@@ -1,5 +1,9 @@
-module mips(clk);
-input clk;
+module mips(
+    input clk,
+    output reg [31:0] out_result,  // Expose last ALU result
+    output reg [31:0] out_PC,      // Current program counter
+    output reg halted_out           // CPU halted signal
+);
 
 // --- Pipeline registers ---
 reg [31:0] PC;
@@ -18,7 +22,7 @@ reg stall;
 reg [31:0] regs[0:31];
 reg [31:0] Mem[0:1023];
 
-// --- EX stage temporary registers (pure Verilog) ---
+// --- EX stage temporary regs (module scope) ---
 reg [31:0] EX_opA, EX_opB;
 reg [4:0]  EX_dest_exmem, EX_dest_memwb;
 reg [31:0] EX_val_exmem, EX_val_memwb;
@@ -67,6 +71,7 @@ always @(posedge clk) begin
             taken_branch <= 0;
         end
     end
+    out_PC <= PC; // update top-level PC output
 end
 
 // --- ID Stage + Hazard Detection ---
@@ -88,7 +93,6 @@ always @(posedge clk) begin
             default: ID_EX_type <= HALT;
         endcase
 
-        // Load-use hazard
         stall <= 0;
         if(ID_EX_type == LOAD) begin
             if((ID_EX_IR[20:16]!=0) && ((ID_EX_IR[20:16]==IF_ID_IR[25:21]) || (ID_EX_IR[20:16]==IF_ID_IR[20:16]))) begin
@@ -110,7 +114,6 @@ always @(posedge clk) begin
         EX_MEM_IR <= ID_EX_IR;
         taken_branch <= 0;
 
-        // Forwarding setup
         EX_dest_exmem = dest_reg(EX_MEM_type, EX_MEM_IR);
         EX_val_exmem = (EX_MEM_type==RR_ALU || EX_MEM_type==RM_ALU)? EX_MEM_ALUOUT:0;
         EX_dest_memwb = dest_reg(MEM_WB_type, MEM_WB_IR);
@@ -119,13 +122,11 @@ always @(posedge clk) begin
         EX_opA = ID_EX_A;
         EX_opB = ID_EX_B;
 
-        // Forward opA
         if ((EX_dest_exmem!=0)&&(EX_dest_exmem==ID_EX_IR[25:21])&&(EX_MEM_type==RR_ALU||EX_MEM_type==RM_ALU))
             EX_opA = EX_val_exmem;
         else if ((EX_dest_memwb!=0)&&(EX_dest_memwb==ID_EX_IR[25:21])&&(MEM_WB_type==RR_ALU||MEM_WB_type==RM_ALU||MEM_WB_type==LOAD))
             EX_opA = EX_val_memwb;
 
-        // Forward opB (RR_ALU only)
         if(ID_EX_type==RR_ALU) begin
             if ((EX_dest_exmem!=0)&&(EX_dest_exmem==ID_EX_IR[20:16])&&(EX_MEM_type==RR_ALU||EX_MEM_type==RM_ALU))
                 EX_opB = EX_val_exmem;
@@ -168,6 +169,8 @@ always @(posedge clk) begin
                 EX_MEM_cond <= (EX_opA==0);
             end
         endcase
+
+        out_result <= EX_MEM_ALUOUT;  // expose ALU result
     end
 end
 
@@ -194,6 +197,7 @@ always @(posedge clk) begin
             LOAD: regs[MEM_WB_IR[20:16]] <= MEM_WB_LMD;
             HALT: halted <= 1;
         endcase
+        halted_out <= halted;
     end
 end
 
